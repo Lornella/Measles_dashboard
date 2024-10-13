@@ -5,7 +5,7 @@ format:
  dashboard:
    logo: images/measles_icon_my_colors.png
    nav-buttons: github
-   github: https://github.com/Lornella/Masterclass_final_project
+   github: https://github.com/Lornella/Measles_dashboard
    scrolling: true
 theme: minty
 execute: 
