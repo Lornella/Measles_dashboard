@@ -1,0 +1,619 @@
+---
+title: "Measles Dashboard"
+author: "Ornella Luminati"
+format: 
+ dashboard:
+   logo: images/measles_icon_my_colors.png
+   nav-buttons: github
+   github: https://github.com/Lornella/Masterclass_final_project
+   scrolling: true
+theme: minty
+execute: 
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+# Load packages 
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(here, readxl, tidyverse, countrycode, bslib, bsicons, shiny, rgeoboundaries, plotly, htmltools, reactable)
+
+```
+
+```{R}
+##Create a palette
+color_scale <- c("#78c2ad", "#6caf9c", "#609b8a", "#548879", "#487468", "#3c6157", "#304e45", "#243a34", "#182723", "#0c1311", "#000000")
+
+rgb_color_scale <- col2rgb(color_scale)
+
+#Define base colors
+base_colors <- c("#78c2ad", "#f3969a", "#ffce67")
+
+#Create a color palette of 10 colors
+colors_lines_5 <- colorRampPalette(base_colors)(5)
+
+colors_lines_10 <- c("#4DAF91", "#B8E6DF", "#D66368", "#F2A6A2", "#E6B800", "#FFEC99", "#009B77", "#D32F2F", "#FFC107","#795548" 
+)
+
+
+##Load data from csv and xls files as well as from the package rnaturalearth
+
+vacc_measles_dataset <- read_csv(here("data/gapminder_mcv2_vacc.csv"))
+
+counts_measles_dataset <- read_csv(here("data/who_measles_counts.csv"))
+
+pop_raw <- read_xls(here("data/worldbankdata_API_SP.POP.TOTL_DS2_en_excel_v2_31647_modifiedcopy.xls"))
+
+country_shapes <- rnaturalearth::ne_countries()  
+
+## Look at the data
+# glimpse(vacc_measles_dataset)
+# glimpse(child_death_measles_dataset)
+# glimpse(counts_measles_dataset)
+# glimpse(pop)
+
+## Data cleaning
+vacc_measles <- vacc_measles_dataset %>%  
+  pivot_longer(cols = `2000`:`2020`, names_to = "year", values_to = "vaccination_coverage_in_percent") %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year >= 2010) %>% 
+  rename(country_name = country)
+
+counts_measles <- counts_measles_dataset %>% 
+  select(ParentLocationCode, ParentLocation, SpatialDimValueCode, Location, Period, FactValueNumeric) %>% 
+  rename(year = Period, country_code = SpatialDimValueCode,  country_name = Location, measles_cases = FactValueNumeric) %>% 
+  filter(year >= 2010 & year <= 2020)
+
+pop <- pop_raw %>% pivot_longer(cols = `1960`:`2023`, names_to = "year", values_to = "population") %>% 
+  select(!c(`Indicator Name`, `Indicator Code`)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year >= 2010 & year <= 2020) %>% 
+  rename(country_name = `Country Name`, country_code = `Country Code`) 
+
+## Data merging
+#setdiff(counts_measles$country_code, pop$country_code)
+#The output tell us that the following codes are not in pop: "AIA" "COK" "MSR" "NIU" "TKL" "WLF"
+#From Chatgpt: These codes correspond to small islands and territories, many of which have unique political relationships, such as being dependencies or in free association with other countries. 
+#We can get rid of these. 
+
+#setdiff(pop$country_code, counts_measles$country_code)
+#The output tell us that the following codes are missing in counts_measles: "AFE" "AFW" "ARB" "CEB" "CHI" "CSS" "EAP" "EAR" "EAS" "ECA" "ECS" "EMU" "EUU" "FCS" "FRO" "GIB" "GRL" "HIC" "HPC" "IBD" "IBT" "IDA" "IDB" "IDX" "IMN" "INX" "LAC" "LCN" "LDC" "LIC" "LIE" "LMC" "LMY" "LTE" "MAF" "MEA" "MIC" "MNA" "NAC" "OED" "OSS" "PRE" "PRI" "PSS" "PST" "SAS" "SSA" "SSF" "SST" "TEA" "TEC" "TLA" "TMN" "TSA" "TSS" "UMC" "VIR" "WLD" "XKX"
+# From ChatGPT: These codes represent regions, income classifications, or groups of countries, rather than individual nations. Many of them are used by international organizations like the World Bank to classify countries by income level, development stage, or geographic area.
+# We can get rid of these.
+
+counts_measles <- counts_measles %>% 
+ filter(!country_code %in% c("AIA", "COK", "MSR", "NIU", "TKL", "WLF"))
+
+#With a left_join we get rid of the country codes in pop that we don't need.
+
+merged_pop_cases <- left_join(counts_measles, pop, by = c("country_code", "year"))
+
+#Get a county code for the vaccination dataset
+vacc_measles <- vacc_measles %>% 
+  mutate(country_code = countrycode(country_name, 
+                                    "country.name",
+                                    "iso3c"))
+
+#setdiff(merged_pop_cases$country_code, vacc_measles$country_code)
+#The output shows that 30 country codes are missing in vacc_measles. These codes represent a mix of independent countries and territories across different regions of the world. 
+#We will keep these in. 
+
+#setdiff(vacc_measles$country_code, merged_pop_cases$country_code)
+#All country codes in vacc_measles are present in merged_pop_cases. 
+
+#Merging with vacc and cleaning
+merged_pop_cases_vacc <- left_join(merged_pop_cases,
+                         vacc_measles, 
+                         by = c("country_code",
+                                "year")) %>% 
+               select(!c("country_name",
+                      "country_name.x",
+                      "country_name.y")) %>% 
+               rename(region_code = ParentLocationCode,
+                      region_name = ParentLocation) %>% 
+               mutate(country_name = countrycode(country_code, origin = "iso3c", destination = "country.name"))
+
+#Calculate incidence
+merged_pop_cases_vacc <- merged_pop_cases_vacc %>%
+  mutate(incidence = measles_cases/population*100000)
+
+##Wanted to use child mortality data, but I let this out, as I could not find information about the numbers and these seem strange. The numbers should be the number of child deaths, but there are numbers with decimals. So I commented this part out.
+# child_death_measles_dataset <- read_csv(here("data/gapminder_measles_deaths_in_children_1_59_months_total_deaths.csv"))
+
+# child_death_measles <- child_death_measles_dataset %>% 
+#   mutate(`2018` = as.character(`2018`), 
+#          `2019` = as.character(`2019`)) %>% 
+#   pivot_longer(cols = `1990`:`2019`, names_to = "year", values_to = "child_death") %>% 
+#   mutate(child_death = str_replace_all(child_death, pattern = "k", replacement = "e3") %>%
+#   str_replace_all(pattern = "M", replacement = "e6") %>%
+#   as.numeric(child_death))
+
+```
+
+```{r}
+data2020 <- merged_pop_cases_vacc %>% 
+  dplyr::filter(year == 2020)
+
+number_of_countries_in_dataset <- data2020 %>% 
+  summarise(n = n())
+
+number_of_countries_vacc_over_95_in2020 <- data2020 %>% 
+  filter(vaccination_coverage_in_percent >=95) %>% 
+  summarise(n = n())
+
+perc_vacc_over_95 <- round(number_of_countries_vacc_over_95_in2020/number_of_countries_in_dataset*100, 1)
+
+number_of_countries_inc_lower_1_in2020 <- data2020 %>% 
+  filter(incidence < 1) %>% 
+  summarise(n = n())
+
+perc_inc_lower_1 <- round(number_of_countries_inc_lower_1_in2020/number_of_countries_in_dataset*100, 1)
+
+lowest_vacc_coverage_2020_country <- data2020 %>% 
+  dplyr::arrange(vaccination_coverage_in_percent) %>% 
+  head(1) %>% 
+  pull(country_name)
+
+lowest_vacc_coverage_2020_number <- data2020 %>%  
+  dplyr::arrange(vaccination_coverage_in_percent) %>% 
+  head(1) %>% 
+  pull(vaccination_coverage_in_percent) %>% 
+  round(1)
+  
+highest_incidence_2020_country <- data2020 %>% 
+  dplyr::arrange(-incidence) %>% 
+  head(1) %>% 
+  pull(country_name)
+
+highest_incidence_2020_number <- data2020 %>%  
+  dplyr::arrange(-incidence) %>% 
+  head(1) %>% 
+  pull(incidence) %>% 
+  round(1)
+   
+  
+```
+
+```{R}
+
+#Get country shapes from rnaturalearth packages
+country_shapes <- rnaturalearth::ne_countries()
+
+#setdiff(data2020$country_code, country_shapes$adm0_a3)
+#The difference are small islands. Ok to let them out.
+
+#vaccination coverage map
+vac_map <- left_join(country_shapes, data2020, 
+          by = c("adm0_a3" = "country_code")) %>% 
+  mutate(tooltip_label = paste0(country_name, " : ", 
+                                vaccination_coverage_in_percent, 
+                                " %")) %>%
+  ggplot()+
+  geom_sf(aes(fill = vaccination_coverage_in_percent, 
+              text = tooltip_label))+
+  scale_fill_gradientn(colors = color_scale,
+    name = "Vaccination coverage in %", 
+    breaks = c(0, 30, 60, 99),
+    labels = c("0", "30", "60", "99"), 
+    guide = guide_colorbar(barwidth = 10, barheight = 1)  
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 12), 
+    legend.text = element_text(size = 10) 
+  )
+
+
+vac_map_ggplotly <- ggplotly(vac_map, tooltip = "text") 
+
+#incidence map
+inc_map <- left_join(country_shapes, data2020, 
+          by = c("adm0_a3" = "country_code")) %>% 
+  mutate(tooltip_label = paste0(country_name, " : ", 
+                              round(incidence, 2), " per 100000")) %>% 
+  ggplot()+
+  geom_sf(aes(fill = incidence, text = tooltip_label))+
+  scale_fill_gradientn(colors = color_scale,
+    name = "Incidence per 100 000", 
+    breaks = c(0, 20, 50, 88.62),
+    labels = c("0", "20", "50", "88.62"), 
+    guide = guide_colorbar(barwidth = 10, barheight = 1)  
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 12), 
+    legend.text = element_text(size = 10) 
+  )
+
+inc_map_ggplotly <- ggplotly(inc_map, tooltip = "text")
+```
+
+```{R}
+##Define colors for Maps
+custom_color <- list(
+  c(0, paste0("rgb(", rgb_color_scale[1,1], ",", rgb_color_scale[2,1], ",", rgb_color_scale[3,1], ")")),   
+  c(0.3, paste0("rgb(", rgb_color_scale[1,3], ",", rgb_color_scale[2,3], ",", rgb_color_scale[3,3], ")")), 
+  c(0.6, paste0("rgb(", rgb_color_scale[1,7], ",", rgb_color_scale[2,7], ",", rgb_color_scale[3,7], ")")),     
+  c(0.99, paste0("rgb(", rgb_color_scale[1,11], ",", rgb_color_scale[2,11], ",", rgb_color_scale[3,11], ")"))     
+)
+
+custom_color_scale <- list(
+  c(as.numeric(custom_color[[1]][1]), custom_color[[1]][2]),   
+  c(as.numeric(custom_color[[2]][1]), custom_color[[2]][2]),   
+  c(as.numeric(custom_color[[3]][1]), custom_color[[3]][2]),
+  c(as.numeric(custom_color[[4]][1]), custom_color[[4]][2])
+)
+
+custom_color_inc <- list(
+  c(0, paste0("rgb(", rgb_color_scale[1,1], ",", rgb_color_scale[2,1], ",", rgb_color_scale[3,1], ")")),   
+  c(20, paste0("rgb(", rgb_color_scale[1,3], ",", rgb_color_scale[2,3], ",", rgb_color_scale[3,3], ")")), 
+  c(50, paste0("rgb(", rgb_color_scale[1,7], ",", rgb_color_scale[2,7], ",", rgb_color_scale[3,7], ")")),     
+  c(88.62, paste0("rgb(", rgb_color_scale[1,11], ",", rgb_color_scale[2,11], ",", rgb_color_scale[3,11], ")"))     
+)
+
+custom_color_scale_inc <- list(
+  c(as.numeric(custom_color[[1]][1]), custom_color[[1]][2]),   
+  c(as.numeric(custom_color[[2]][1]), custom_color[[2]][2]),   
+  c(as.numeric(custom_color[[3]][1]), custom_color[[3]][2]),
+  c(as.numeric(custom_color[[4]][1]), custom_color[[4]][2])
+)
+
+##Vac map animated
+vac_map_animated <- merged_pop_cases_vacc %>%
+  left_join(country_shapes, by = c("country_code" = "adm0_a3")) %>%
+  plot_ly(
+    type = 'choropleth',  
+    locations = ~country_code, 
+    z = ~vaccination_coverage_in_percent, 
+    text = ~paste(country_name, ":", vaccination_coverage_in_percent, "% (", year, ")"),
+    frame = ~year,
+    colorscale = custom_color_scale,  
+    marker = list(line = list(color = "black", width = 0.5)),
+    colorbar = list(
+      title = "Vaccination Coverage (%)",
+      tickvals = c(0, 30, 60, 99),
+      ticktext = c("0", "30", "60", "99")
+    )
+  ) %>%
+  layout(
+    title = "Vaccination Coverage Over Time",
+    geo = list(
+      showframe = FALSE,
+      projection = list(type = 'natural earth')
+    )
+  ) %>%
+  animation_opts(
+    frame = 1000,  
+    transition = 0, 
+    easing = "linear"
+  ) %>%
+  animation_slider(
+    currentvalue = list(prefix = "Year: ")
+  )
+
+##Incidence map animated
+inc_map_animated <- merged_pop_cases_vacc %>%
+  left_join(country_shapes, by = c("country_code" = "adm0_a3")) %>%
+  plot_ly(
+    type = 'choropleth',  
+    locations = ~country_code, 
+    z = ~incidence, 
+    text = ~paste(country_name, ":", incidence, "% (", year, ")"),
+    frame = ~year,
+    colorscale = custom_color_scale_inc,  
+    marker = list(line = list(color = "black", width = 0.5)),
+    colorbar = list(
+      title = "Incidence per 100 000",
+      tickvals = c(0, 20, 50, 88.62),
+      ticktext = c("0", "20", "50", "88.62")
+    )
+  ) %>%
+  layout(
+    title = "Incidence Over Time",
+    geo = list(
+      showframe = FALSE,
+      projection = list(type = 'natural earth')
+    )
+  ) %>%
+  animation_opts(
+    frame = 1000,  
+    transition = 0, 
+    easing = "linear"
+  ) %>%
+  animation_slider(
+    currentvalue = list(prefix = "Year: ")
+  )
+
+```
+
+```{R}
+##Top 10 vaccination coverage
+top_10_vacc_countries <- data2020 %>% 
+  arrange(-vaccination_coverage_in_percent) %>% 
+  head(10) %>% 
+  pull(country_code)
+
+top_10_vacc <- merged_pop_cases_vacc %>% 
+  filter(country_code %in% `top_10_vacc_countries`) %>% 
+  arrange(year) %>% 
+  rename(Country = country_name) %>% 
+  rename(`Vaccination Coverage` = vaccination_coverage_in_percent)
+
+graph_vac_top_10 <- ggplot(top_10_vacc) +
+  geom_line(aes(x = year, y = `Vaccination Coverage`, color = `Country`)) +
+  scale_color_manual(values = colors_lines_10) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2)) +
+  labs(title = "Vaccination Coverage Over Years",
+       subtitle = "Top 10 countries for vaccination coverage in 2020",
+       x = "Year",
+       y = "Vaccination Coverage (%)", 
+       color = "Country") +
+  theme_minimal()
+
+graph_vac_plotly_top_10 <- ggplotly(graph_vac_top_10)
+
+tab_vacc_top_10 <- top_10_vacc %>% 
+  pivot_wider(names_from = year, values_from = `Vaccination Coverage`, id_cols = Country)
+
+reacting_tab_vacc_top_10 <- reactable(tab_vacc_top_10)
+
+##Low 10 vaccination coverage
+bottom_10_vacc_countries <- data2020 %>% 
+  arrange(vaccination_coverage_in_percent) %>% 
+  head(10) %>% 
+  pull(country_code)
+
+bottom_10_vacc <- merged_pop_cases_vacc %>% 
+  filter(country_code %in% `bottom_10_vacc_countries`) %>% 
+  arrange(year) %>% 
+  rename(Country = country_name) %>% 
+  rename(`Vaccination Coverage` = vaccination_coverage_in_percent)
+
+graph_vac_bottom_10 <- ggplot(bottom_10_vacc) +
+  geom_line(aes(x = year, y = `Vaccination Coverage`, color = `Country`)) +
+  scale_color_manual(values = colors_lines_10) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2)) +
+  labs(title = "Vaccination Coverage Over Years",
+       subtitle = "Bottom 10 countries for vaccination coverage in 2020",
+       x = "Year",
+       y = "Vaccination Coverage (%)", 
+       color = "Country") +
+  theme_minimal()
+
+graph_vac_plotly_bottom_10 <- ggplotly(graph_vac_bottom_10)
+
+tab_vacc_bottom_10 <- bottom_10_vacc %>% 
+  pivot_wider(names_from = year, values_from = `Vaccination Coverage`, id_cols = Country)
+
+reacting_tab_vacc_bottom_10 <- reactable(tab_vacc_bottom_10)
+
+```
+
+
+```{R}
+##Top 10 incidence
+top_10_inc_countries <- data2020 %>% 
+  arrange(-incidence) %>% 
+  head(10) %>% 
+  pull(country_code)
+
+top_10_inc <- merged_pop_cases_vacc %>% 
+  filter(country_code %in% `top_10_inc_countries`) %>% 
+  arrange(year) %>% 
+  rename(Country = country_name) %>% 
+  rename(Incidence = incidence)
+
+graph_inc_top_10 <- ggplot(top_10_inc) +
+  geom_line(aes(x = year, y = Incidence, color = `Country`)) +
+  scale_color_manual(values = colors_lines_10) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2)) +
+  labs(title = "Incidence Over Years",
+       subtitle = "10 Countries with highest incidence in 2020",
+       x = "Year",
+       y = "Incidence per 100 000", 
+       color = "Country") +
+  theme_minimal()
+
+graph_inc_plotly_top_10 <- ggplotly(graph_inc_top_10)
+
+tab_inc_top_10 <- top_10_inc %>% 
+  pivot_wider(names_from = year, values_from = Incidence, id_cols = Country)
+
+reacting_tab_inc_top_10 <- reactable(tab_inc_top_10)
+
+##Low 10 vaccination coverage
+bottom_10_inc_countries <- data2020 %>% 
+  arrange(incidence) %>% 
+  head(10) %>% 
+  pull(country_code)
+
+bottom_10_inc <- merged_pop_cases_vacc %>% 
+  filter(country_code %in% `bottom_10_inc_countries`) %>% 
+  arrange(year) %>% 
+  rename(Country = country_name) %>% 
+  rename(Incidence = incidence)
+
+graph_inc_bottom_10 <- ggplot(bottom_10_inc) +
+  geom_line(aes(x = year, y = Incidence, color = `Country`)) +
+  scale_color_manual(values = colors_lines_10) +
+  scale_x_continuous(breaks = seq(2010, 2020, by = 2)) +
+  labs(title = "Incidence Over Years",
+       subtitle = "10 countries with lowest incidence in 2020",
+       x = "Year",
+       y = "Incidence per 100 000", 
+       color = "Country") +
+  theme_minimal()
+
+graph_inc_plotly_bottom_10 <- ggplotly(graph_inc_bottom_10)
+
+tab_inc_bottom_10 <- bottom_10_inc %>% 
+  pivot_wider(names_from = year, values_from = Incidence, id_cols = Country)
+
+reacting_tab_inc_bottom_10 <- reactable(tab_inc_bottom_10)
+
+```
+
+# Overview
+
+## Row1
+
+### col1 {width="65%"}
+
+```{R title = "World map showing measles vaccination coverage in children receiving two doses (data from 2020)" }
+vac_map_ggplotly
+```
+
+### col2 {width="35%"}
+
+```{R}
+value_box(
+  title = "Percent of countries reaching 95% coverage",
+  value = paste(perc_vacc_over_95, " %"),
+  showcase = bsicons::bs_icon("file-earmark-medical"),
+  theme = value_box_theme(bg = "#91debf")
+)
+
+```
+
+```{R}
+value_box(
+  title = "Lowest measles vaccine coverage in 2020",
+  value = paste(lowest_vacc_coverage_2020_number, " %"),
+  p(paste0("(",lowest_vacc_coverage_2020_country,")")),
+  showcase = bsicons::bs_icon("file-earmark-medical-fill"),
+  theme = value_box_theme(bg = "#ffdf9c")
+)
+
+```
+
+## Row2
+
+### col1 {width="65%"}
+
+```{R title = "World map displaying measles incidence rates (data from 2020)"}
+inc_map_ggplotly
+```
+
+### col2 {width="35%"}
+
+```{R}
+value_box(
+  title = "Percent of countries with incidence < 1 per 100 000",
+  value = paste(perc_inc_lower_1, " %"),
+  showcase = bsicons::bs_icon("virus2"),
+  theme = value_box_theme(bg = "#91debf")
+)
+
+```
+
+```{R}
+value_box(
+  title = "Highest incidence \n(per 100 000) in 2020",
+  value = highest_incidence_2020_number,
+  p(paste0("(",highest_incidence_2020_country,")")),
+  showcase = bsicons::bs_icon("file-earmark-medical-fill"),
+  theme = value_box_theme(bg = "#ffdf9c")
+)
+
+```
+
+# Vaccination coverage
+
+## Row1
+
+```{R}
+vac_map_animated
+```
+
+## Row2
+
+### Col1 {.tabset}
+
+```{R title = "Graph top 10" }
+graph_vac_plotly_top_10
+
+```
+
+```{R title = "Table top 10" }
+reacting_tab_vacc_top_10
+
+```
+
+### Col2 {.tabset}
+
+```{R title = "Graph bottom 10"}
+
+graph_vac_plotly_bottom_10
+
+```
+
+```{R title = "Table bottom 10"}
+
+reacting_tab_vacc_bottom_10
+
+```
+
+# Incidences
+
+## Row1 {hight="50%"}
+
+```{R}
+inc_map_animated
+
+```
+
+## Row2
+
+### Col1 {.tabset}
+
+```{R title = "Graph lowest 10"}
+
+graph_inc_plotly_bottom_10
+
+```
+
+```{R title = "Table lowest 10"}
+
+reacting_tab_inc_bottom_10
+
+```
+
+### Col2 {.tabset}
+
+```{R title = "Graph highest 10" }
+graph_inc_plotly_top_10
+
+```
+
+```{R title = "Table highest 10" }
+reacting_tab_inc_top_10
+
+```
+
+# About
+
+**Measles - a short introduction**
+
+Measles is a highly contagious viral disease caused by the measles virus, primarily affecting children but also posing risks to adults without immunity. It is transmitted through respiratory droplets from coughing, sneezing, or close contact with an infected person. Symptoms typically appear 10 to 14 days after exposure and include high fever, cough, runny nose, and inflamed eyes, followed by a characteristic red rash that spreads across the body.
+
+Though generally self-limiting, measles can lead to severe complications such as pneumonia, encephalitis, and even death, particularly in young children, pregnant women, and individuals with weakened immune systems. Before widespread vaccination, measles was a leading cause of childhood mortality worldwide. However, thanks to the development of the measles vaccine, incidence rates have significantly decreased.
+
+The two-dose measles vaccine is highly effective in preventing the disease and plays a crucial role in public health. Global vaccination campaigns have made substantial progress toward measles elimination, though outbreaks continue to occur, especially in regions with low vaccination coverage. Ensuring widespread immunization remains essential to controlling the spread of this highly infectious disease.
+
+**References**
+
+**Data**
+
+-   Vaccinations coverage data: Gapminder, <https://www.gapminder.org/data/>
+
+-   Measles counts data: World Health Organisation, <https://www.who.int/data/gho/data/indicators/indicator-details/GHO/measles---number-of-reported-cases>
+
+-   Population data: World Bank Group, <https://data.worldbank.org/indicator/SP.POP.TOTL>
+
+**Text**
+
+-   Short introduction about measles: ChatGPT
+-   Measles-happy-logo: ChatGPT
